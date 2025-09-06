@@ -11,6 +11,8 @@ import hashlib
 import asyncio
 from datetime import datetime
 from typing import Dict, Any
+import locale
+import calendar
 
 import requests
 import fitz  # PyMuPDF
@@ -88,29 +90,95 @@ def extract_groups_by_institute(text: str) -> Dict[str, list]:
         by_inst[k] = sorted(by_inst[k])
     return by_inst
 
-def extract_schedule_for_group(full_text: str, group: str, max_lines=120) -> str:
-    lines = full_text.splitlines()
-    # Найдём индекс, где упоминается группа
-    idx = None
+
+DATE_RE = re.compile(r'^\d{2}\.\d{2}\.\d{4}$')
+TIME_START_RE = re.compile(r'^\d{1,2}:\d{2}-$')
+TIME_END_RE = re.compile(r'^\d{1,2}:\d{2}$')
+GROUP_START_RE = GROUP_RE  # уже есть
+
+def extract_schedule_for_group(full_text: str, group: str, max_lines=1000) -> str:
+    lines = [ln.strip() for ln in full_text.splitlines() if ln.strip() != ""]
+    # Найти индекс первой строки с группой
+    start = None
     for i, ln in enumerate(lines):
         if group in ln:
-            idx = i
+            start = i
             break
-    if idx is None:
-        return "Расписание для группы не найдено в текущем документе."
-    # Собирать строки вниз, пока не встретим другую группу в начале или пока не набралось max_lines
-    collected = []
-    for ln in lines[idx: idx + max_lines]:
-        # остановим если появилась строка, явно содержащая другой код группы (и это не первая строка)
-        if collected and GROUP_RE.search(ln):
+    if start is None:
+        return "Расписание для группы не найдено в документе."
+
+    # Собираем до следующей группы или до конца, но не больше max_lines
+    block = []
+    for ln in lines[start: start + max_lines]:
+        # если встретили другую группу (и это не первая строка), остановиться
+        if len(block) > 0 and GROUP_START_RE.search(ln):
             break
-        collected.append(ln)
-    # Обрезаем пустые строки спереди/сзади
-    while collected and not collected[0].strip():
-        collected.pop(0)
-    while collected and not collected[-1].strip():
-        collected.pop()
-    return "\n".join(collected) if collected else "Пустой фрагмент расписания."
+        block.append(ln)
+
+    # Парсим блок по датам и парам (время -> предмет)
+    result = []
+    current_date = None
+    day_map = {}  # date -> list of (time, subject)
+
+    i = 0
+    while i < len(block):
+        ln = block[i]
+        # Если это строка с датой
+        if DATE_RE.match(ln):
+            current_date = ln
+            day_map.setdefault(current_date, [])
+            i += 1
+            continue
+
+        # Сложный случай: время разбито на две строки: "8:30-" и "10:05"
+        if TIME_START_RE.match(ln) and i + 1 < len(block) and TIME_END_RE.match(block[i+1]):
+            time_range = ln + block[i+1]  # '8:30-' + '10:05' -> '8:30-10:05'
+            # следующий за ними обычно предмет
+            subj = ""
+            if i + 2 < len(block):
+                subj = block[i+2]
+                i += 3
+            else:
+                i += 2
+            if current_date is None:
+                # если даты нет — помещаем под "Не указана дата"
+                current_date = "Не указана дата"
+                day_map.setdefault(current_date, [])
+            day_map[current_date].append((time_range, subj))
+            continue
+
+        # Иногда время и предмет идут в одной строке (редко) или линия - предмет
+        # Если это выглядит как предмет (буквы кириллицы), то попытаемся сопоставить с предыдущим незаполненным временем
+        if re.search(r'[А-Яа-яЁё]', ln):
+            # если последний элемент дня есть и у него пустое время — добавляем как предмет
+            lst = day_map.setdefault(current_date or "Не указана дата", [])
+            # Попробуем найти последний элемент без предмета (time present, subject empty)
+            if lst and lst[-1][1] == "":
+                lst[-1] = (lst[-1][0], ln)
+            else:
+                # возможно нет времени: добавим как запись без времени
+                lst.append(("", ln))
+            i += 1
+            continue
+
+        # Иначе просто двигаемся
+        i += 1
+
+    # Форматируем результат в читабельный текст
+    out_lines = [group]
+    for dt, pairs in day_map.items():
+        out_lines.append("")  # пустая строка перед датой
+        out_lines.append(dt)
+        for time_range, subj in pairs:
+            if time_range and subj:
+                out_lines.append(f"  {time_range}  —  {subj}")
+            elif time_range and not subj:
+                out_lines.append(f"  {time_range}  —  (предмет не указан)")
+            elif subj and not time_range:
+                out_lines.append(f"  {subj}")
+    if len(out_lines) == 1:
+        return "Пустой фрагмент расписания."
+    return "\n".join(out_lines)
 
 # --- Инициализация: загрузить/обновить кэш при старте ---
 
@@ -268,10 +336,10 @@ async def check_for_updates():
 # --- Запуск ---
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(initial_load())
-    # Запустить планировщик (проверка каждый час)
-    scheduler.add_job(lambda: asyncio.create_task(check_for_updates()), "interval", hours=1, next_run_time=datetime.now())
+    asyncio.run(initial_load())
+
+    scheduler.add_job(lambda: asyncio.run(check_for_updates()), "interval", hours=1, next_run_time=datetime.now())
     scheduler.start()
+
     print("Бот запущен. /start")
     executor.start_polling(dp, skip_updates=True)
