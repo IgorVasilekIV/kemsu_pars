@@ -334,16 +334,10 @@ async def check_for_updates():
                 print("Ошибка уведомления", chat_id, e)
 
 # --- Запуск ---
+async def main():
+    await initial_load()
+    scheduler.start()
+    await dp.start_polling()
 
 if __name__ == "__main__":
-    # выполним начальную загрузку в новом event loop
-    asyncio.run(initial_load())
-
-    # используем BackgroundScheduler чтобы не зависеть от основного event loop
-    from apscheduler.schedulers.background import BackgroundScheduler
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.run(check_for_updates()), "interval", hours=1, next_run_time=datetime.now())
-    scheduler.start()
-
-    print("Бот запущен. /start")
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
