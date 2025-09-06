@@ -19,7 +19,7 @@ import fitz  # PyMuPDF
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,7 +33,7 @@ DATA_FILE = "bot_data.json"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
-scheduler = AsyncIOScheduler()
+scheduler = BackgroundScheduler()
 
 # В памяти (и в файле) храним users и кэш расписания
 state: Dict[str, Any] = {
@@ -336,8 +336,12 @@ async def check_for_updates():
 # --- Запуск ---
 
 if __name__ == "__main__":
+    # выполним начальную загрузку в новом event loop
     asyncio.run(initial_load())
 
+    # используем BackgroundScheduler чтобы не зависеть от основного event loop
+    from apscheduler.schedulers.background import BackgroundScheduler
+    scheduler = BackgroundScheduler()
     scheduler.add_job(lambda: asyncio.run(check_for_updates()), "interval", hours=1, next_run_time=datetime.now())
     scheduler.start()
 
