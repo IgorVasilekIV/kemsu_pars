@@ -2,6 +2,7 @@ __version__ = "2.0.0"
 
 
 # Требования: aiogram, pymupdf, requests, apscheduler, python-dotenv
+# если не получается поставить aiohttp, то используйте `export AIOHTTP_NO_EXTENSIONS=1` перед установкой
 
 import os
 import re
